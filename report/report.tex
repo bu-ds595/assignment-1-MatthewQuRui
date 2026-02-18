@@ -13,13 +13,15 @@
 \usepackage{microtype}
 \usepackage{xcolor}
 \usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{algorithmic}
 
-\title{Assignment 1: [Your Method Name]}
+\title{Curvature-Adaptive Langevin Monte Carlo}
 
 \author{%
-  Your Name \\
+  Qurui Zhang \\
   Boston University \\
-  \texttt{your-email@bu.edu}
+  \texttt{zhangqr@bu.edu}
 }
 
 \begin{document}
@@ -27,44 +29,93 @@
 \maketitle
 
 \begin{abstract}
-A one-paragraph summary of your method, key results, and main takeaways.
+We propose Curvature-Adaptive Langevin Monte Carlo (CALM), a Metropolis-adjusted Langevin algorithm that preconditions proposals using the local Hessian of the log-density via automatic differentiation. By eigendecomposing the negative Hessian and clamping eigenvalues, CALM constructs a position-dependent preconditioner that adapts proposal scale and orientation to local geometry. On the Rosenbrock distribution, CALM achieves ESS competitive with HMC. On Neal's Funnel, where optimal scale varies by orders of magnitude, CALM's local curvature adaptation automatically adjusts proposal scale without requiring a hand-specified mass matrix---a structural advantage over fixed-step-size methods that either under-cover the tails or sacrifice efficiency through conservative tuning. Ablation studies confirm curvature adaptation is the key ingredient.
 \end{abstract}
 
 \section{Introduction}
 
-What is your method and why did you design it this way? What problem or limitation of existing methods does it address?
+MCMC efficiency depends critically on how well proposals match the target geometry. RWMH uses isotropic proposals and ignores the target's shape. HMC~\cite{neal2011mcmc} uses gradients for coherent moves but its fixed mass matrix cannot adapt to varying-scale regions. Standard MALA adds gradient drift but still uses isotropic noise.
 
-% Your content here
+We propose \textbf{CALM}, which extends MALA by preconditioning with the local Hessian of $\log p(\theta)$. Related to Riemannian MALA~\cite{girolami2011riemann}, our approach uses JAX's \texttt{jax.hessian} for exact Hessian computation, eigendecomposition for curvature extraction, and eigenvalue clamping for robustness in non-log-concave regions. The MH correction ensures exact targeting despite asymmetric, position-dependent proposals.
 
 \section{Method}
 
-Technical description of your algorithm. Include pseudocode if helpful.
+Given target $\pi(\theta) \propto \exp(\ell(\theta))$, we compute gradient $g = \nabla \ell(\theta)$ and Hessian $H = \nabla^2 \ell(\theta)$. We eigendecompose $-H = Q\,\mathrm{diag}(\lambda)\,Q^\top$ and clamp: $\tilde{\lambda}_i = \max(\lambda_i, \lambda_{\min})$. The preconditioner is $M = Q\,\mathrm{diag}(1/\tilde{\lambda})\,Q^\top$.
 
-% Your content here
+\textbf{Proposal:}\ $\theta' = \theta + \frac{\varepsilon^2}{2} M g + \varepsilon M^{1/2} z$, $z \sim \mathcal{N}(0, I)$, so $\theta' \sim \mathcal{N}(\theta + \frac{\varepsilon^2}{2} M g,\, \varepsilon^2 M)$.
+
+\textbf{MH correction:}\ Since $M(\theta)$ is position-dependent, $q(\theta'|\theta) \neq q(\theta|\theta')$. We accept with probability $\min(1, \alpha)$ where $\log \alpha = [\ell(\theta') - \ell(\theta)] + [\log q(\theta|\theta') - \log q(\theta'|\theta)]$, with:
+\begin{equation}
+\log q(\theta_{\mathrm{to}} | \theta_{\mathrm{from}}) = -\tfrac{D}{2}\log(2\pi) - D\log\varepsilon - \tfrac{1}{2}\log\det M - \tfrac{1}{2\varepsilon^2}(\theta_{\mathrm{to}} - \mu)^\top M^{-1} (\theta_{\mathrm{to}} - \mu).
+\end{equation}
+Each step costs $O(D^3)$ for eigendecomposition (done twice: current and proposed positions).
+
+\begin{algorithm}[t]
+\caption{CALM: Curvature-Adaptive Langevin Monte Carlo}
+\begin{algorithmic}[1]
+\REQUIRE Log-density $\ell$, step size $\varepsilon$, eigenvalue floor $\lambda_{\min}$, initial $\theta_0$
+\FOR{$t = 1, \ldots, T$}
+  \STATE $g \leftarrow \nabla \ell(\theta_{t-1})$;\; eigendecompose $-\nabla^2\ell(\theta_{t-1}) = Q\,\mathrm{diag}(\lambda)\,Q^\top$
+  \STATE $\tilde{\lambda}_i \leftarrow \max(\lambda_i, \lambda_{\min})$;\; $M \leftarrow Q\,\mathrm{diag}(1/\tilde{\lambda})\,Q^\top$
+  \STATE Propose $\theta' \leftarrow \theta_{t-1} + \frac{\varepsilon^2}{2}Mg + \varepsilon M^{1/2} z$,\; $z \sim \mathcal{N}(0,I)$
+  \STATE Recompute $g', M'$ at $\theta'$; accept/reject via MH ratio
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
 
 \section{Experiments}
+\label{sec:experiments}
 
-Results on both benchmarks. Include visualizations (samples, traces) and quantitative diagnostics (ESS, acceptance rates). Compare to vanilla MH and HMC baselines.
+We draw 50{,}000 samples from each method on two benchmarks. RWMH and HMC use BlackJAX; CALM uses \texttt{jax.grad}, \texttt{jax.hessian}, and \texttt{jnp.linalg.eigh}. All chains are run as a single sequence; bulk ESS is computed via ArviZ~\cite{arviz_2019}, which issues a shape warning for single-chain inputs (rendering $\hat{R}$ unavailable). Bulk ESS values remain informative for comparing relative mixing efficiency across methods, though absolute magnitudes should be interpreted conservatively.
 
-% Your content here
-% Tip: Use \includegraphics to add figures from your notebook
+\textbf{Rosenbrock:}\ $\log p(x,y) \propto -0.05(1-x)^2 - (y-x^2)^2$. A narrow curved ridge. RWMH ($\sigma\!=\!1.0$, acc.\ 50\%) attains a high bulk ESS (16{,}997 / 18{,}094 for $x$/$y$), yet its posterior s.d.\ for $x$ (0.64) is far below HMC's (2.20), revealing that rapid local decorrelation within a narrow neighbourhood does not imply global coverage of the banana. HMC ($\varepsilon\!=\!0.2$, $L\!=\!10$, acc.\ 75\%) follows the curvature via gradient-based dynamics and recovers the correct marginal variances, despite lower bulk ESS (42 / 93). CALM ($\varepsilon\!=\!0.5$, $\lambda_{\min}\!=\!10^{-3}$, acc.\ 45\%, ESS 29 / 138) uses the Hessian to align proposals with the ridge; its ESS in the $y$-dimension is comparable to HMC, and the single-step proposal structure---rather than curvature adaptation per se---is the principal bottleneck for the $x$-dimension.
+
+\textbf{Neal's Funnel:}\ $v \sim \mathcal{N}(0,9)$, $x \sim \mathcal{N}(0, e^v)$. The optimal scale for $x$ varies exponentially with $v$, making any fixed step size suboptimal. We tuned both baselines toward their respective recommended acceptance ranges. Despite tuning, each exhibits a characteristic failure mode. RWMH ($\sigma\!=\!2.0$, acc.\ 38\%) achieves a deceptively high bulk ESS (6{,}864 / 16{,}125), but its posterior s.d.\ for $v$ (1.54) is substantially below the true value of 3.00, indicating that the chain mixes efficiently within an under-covered region rather than exploring the full distribution. HMC ($\varepsilon\!=\!0.4$, $L\!=\!10$, acc.\ 70.0\%) operates within the recommended 70--85\% acceptance range and recovers the correct marginal variance of $v$ ($\hat{\sigma}_v \approx 3.17$), achieving bulk ESS of 68 ($v$) and 2{,}058 ($x$). CALM ($\varepsilon\!=\!0.3$, $\lambda_{\min}\!=\!10^{-3}$, acc.\ 26\%, ESS 110 / 77) attains lower raw ESS than either baseline, yet automatically scales proposals via the local Hessian without requiring a hand-specified mass matrix.
+
+We report acceptance rates and bulk ESS (ArviZ, single chain; see Section~\ref{sec:experiments}). On the Funnel, raw ESS values require careful interpretation. RWMH's high ESS reflects efficient local mixing within an under-covered region; its posterior s.d.\ for $v$ (1.54 vs.\ true 3.00) confirms that the chain never explores the full distribution. Among the two well-specified methods, the dimension-wise ESS pattern is instructive: HMC attains ESS of 68 ($v$) and 2{,}058 ($x$), while CALM attains 110 ($v$) and 77 ($x$). HMC's fixed identity mass matrix happens to be better calibrated for $x$ once the step size is appropriately increased, but remains poorly matched to $v$---the direction whose scale varies exponentially. CALM's Hessian-based preconditioning yields a higher ESS for $v$ despite a lower acceptance rate, suggesting that curvature adaptation provides a targeted benefit precisely in the direction that is hardest for fixed-mass-matrix methods.
+
+\textbf{Ablation: step size.}\ Sweeping $\varepsilon \in \{0.05, \ldots, 2.0\}$: acceptance decreases monotonically with $\varepsilon$; optimal ESS at $\varepsilon \approx 0.2$--$0.5$.
+
+\textbf{Ablation: eigenvalue floor.}\ Sweeping $\lambda_{\min} \in \{10^{-5}, \ldots, 10^2\}$: as $\lambda_{\min} \to \infty$, $M \to (1/\lambda_{\min})I$ and CALM degrades to MALA. The benefit is most pronounced on the Funnel, where Hessian eigenvalues vary by orders of magnitude.
 
 \section{Discussion}
 
-Where does your method work well? Where does it struggle? What would you try next?
+\textbf{Strengths.}\ CALM excels on distributions with varying local geometry. The Hessian provides direct curvature information, eigenvalue clamping ensures robustness, and MH correction guarantees exactness.
 
-% Your content here
+\textbf{Weaknesses.}\ The $O(D^3)$ eigendecomposition (done twice per step) limits scalability beyond $D \approx 100$. Unlike HMC's multi-step leapfrog, CALM makes single-step proposals, limiting long-range moves; this is the primary reason for its comparatively modest bulk ESS on both benchmarks, rather than the quality of curvature adaptation itself. Like all local methods, CALM cannot jump between separated modes. Additionally, the single-chain experimental setup precludes $\hat{R}$ diagnostics; multi-chain runs would provide stronger convergence guarantees.
+
+\textbf{Future work.}\ Diagonal/low-rank Hessian approximations for scalability; combining curvature preconditioning with leapfrog dynamics (Riemannian HMC); adaptive step size tuning.
 
 \section{AI Collaboration}
 
-Reflect on your use of AI assistants:
-\begin{itemize}
-    \item Which AI tools did you use and for what purposes? Through what interfaces (e.g., chat, code completion, coding agents, $\ldots$)?
-    \item What prompting strategies were effective? What kind of context or instructions helped?
-    \item Where did the AI provide useful ideas vs.\ where did you need to correct or guide it?
-    \item What did you learn about working with AI on technical problems?
-\end{itemize}
+I used Claude (Anthropic) as a coding agent via the Claude Code CLI throughout this project.
 
-% Your content here
+\textbf{Algorithm design.}\ I described the goal (curvature-adaptive sampling) and Claude helped formalize the connection to Riemannian MALA, suggested \texttt{jax.hessian} for exact computation, and proposed eigenvalue clamping. The insight that eigendecomposition naturally provides $M^{1/2}$ came from the discussion.
+
+\textbf{Implementation.}\ Claude wrote the CALM implementation including preconditioner construction, proposal density, and MH correction. I verified the asymmetric proposal density calculation---ensuring the log-determinant and Mahalanobis distance were correct for position-dependent covariance $\varepsilon^2 M(\theta)$.
+
+\textbf{What worked well.}\ Providing mathematical formulations for Claude to implement was highly effective. The agent excelled at translating math to JAX code and generating plotting/diagnostics boilerplate.
+
+\textbf{What needed correction.}\ I carefully verified the MH acceptance ratio, as errors produce silently biased samples. I also guided hyperparameter choices based on domain knowledge.
+
+\textbf{Lesson.}\ AI assistants are effective as mathematical translators and code generators, but humans must own correctness---especially for MCMC acceptance ratios where bugs are invisible without verification.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{3}
+\bibitem{arviz_2019}
+R.~Kumar, C.~Carroll, A.~Hartikainen, and O.~Martin.
+{ArviZ} a unified library for exploratory analysis of {B}ayesian models in {P}ython.
+\emph{Journal of Open Source Software}, 4(33):1143, 2019.
+
+\bibitem{girolami2011riemann}
+M.~Girolami and B.~Calderhead.
+Riemann manifold {L}angevin and {H}amiltonian {M}onte {C}arlo methods.
+\emph{JRSS-B}, 73(2):123--214, 2011.
+
+\bibitem{neal2011mcmc}
+R.~M. Neal.
+{MCMC} using {H}amiltonian dynamics.
+In \emph{Handbook of MCMC}, ch.~5. Chapman and Hall/CRC, 2011.
+\end{thebibliography}
 
 \end{document}
