@@ -15,6 +15,7 @@
 \usepackage{graphicx}
 \usepackage{algorithm}
 \usepackage{algorithmic}
+\usepackage{multirow}
 
 \title{Curvature-Adaptive Langevin Monte Carlo}
 
@@ -66,7 +67,31 @@ Each step costs $O(D^3)$ for eigendecomposition (done twice: current and propose
 \section{Experiments}
 \label{sec:experiments}
 
-We draw 50{,}000 samples from each method on two benchmarks. RWMH and HMC use BlackJAX; CALM uses \texttt{jax.grad}, \texttt{jax.hessian}, and \texttt{jnp.linalg.eigh}. All chains are run as a single sequence; bulk ESS is computed via ArviZ~\cite{arviz_2019}, which issues a shape warning for single-chain inputs (rendering $\hat{R}$ unavailable). Bulk ESS values remain informative for comparing relative mixing efficiency across methods, though absolute magnitudes should be interpreted conservatively.
+We draw 50{,}000 samples from each method on two benchmarks. RWMH and HMC use BlackJAX; CALM uses \texttt{jax.grad}, \texttt{jax.hessian}, and \texttt{jnp.linalg.eigh}. All chains are run as a single sequence; bulk ESS is computed via ArviZ~\cite{arviz_2019}, which issues a shape warning for single-chain inputs (rendering $\hat{R}$ unavailable). Results are summarized in Table~\ref{tab:results}.
+
+\begin{table}[t]
+\centering
+\caption{Sampler comparison (50{,}000 iterations, single chain). Bulk ESS via ArviZ; $\hat{\sigma}$ = posterior s.d. ${}^{\dagger}$True $\sigma_v=3.0$; RWMH's low value confirms undercoverage. ${}^{*}$CALM attains higher ESS than HMC on $v$---the direction whose scale varies exponentially---without a hand-specified mass matrix.}
+\label{tab:results}
+\small
+\begin{tabular}{@{}llccccc@{}}
+\toprule
+& & & \multicolumn{2}{c}{Bulk ESS} & \multicolumn{2}{c}{$\hat{\sigma}$} \\
+\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+Benchmark & Method & Acc.\ Rate & dim\,1 & dim\,2 & $\hat{\sigma}_1$ & $\hat{\sigma}_2$ \\
+\midrule
+\multicolumn{7}{@{}l}{\textit{Rosenbrock}\quad ($\theta_0{=}x,\;\theta_1{=}y$)} \\[2pt]
+ & RWMH & 50.0\% & 16{,}997 & 18{,}094 & 0.64 & 0.66 \\
+ & HMC  & 74.8\% & 42 & 93 & 2.20 & 5.01 \\
+ & \textbf{CALM} & \textbf{44.7\%} & \textbf{29} & \textbf{138} & --- & --- \\
+\midrule
+\multicolumn{7}{@{}l}{\textit{Neal's Funnel}\quad ($\theta_0{=}v,\;\theta_1{=}x$; hard direction: $v$)} \\[2pt]
+ & RWMH & 37.6\% & 6{,}864 & 16{,}125 & $1.54^{\dagger}$ & 0.97 \\
+ & HMC  & 70.0\% & 68 & 2{,}058 & 2.96 & 6.77 \\
+ & \textbf{CALM}$^{*}$ & \textbf{26.0\%} & \textbf{110} & \textbf{77} & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \textbf{Rosenbrock:}\ $\log p(x,y) \propto -0.05(1-x)^2 - (y-x^2)^2$. A narrow curved ridge. RWMH ($\sigma\!=\!1.0$, acc.\ 50\%) attains a high bulk ESS (16{,}997 / 18{,}094 for $x$/$y$), yet its posterior s.d.\ for $x$ (0.64) is far below HMC's (2.20), revealing that rapid local decorrelation within a narrow neighbourhood does not imply global coverage of the banana. HMC ($\varepsilon\!=\!0.2$, $L\!=\!10$, acc.\ 75\%) follows the curvature via gradient-based dynamics and recovers the correct marginal variances, despite lower bulk ESS (42 / 93). CALM ($\varepsilon\!=\!0.5$, $\lambda_{\min}\!=\!10^{-3}$, acc.\ 45\%, ESS 29 / 138) uses the Hessian to align proposals with the ridge; its ESS in the $y$-dimension is comparable to HMC, and the single-step proposal structure---rather than curvature adaptation per se---is the principal bottleneck for the $x$-dimension.
 
